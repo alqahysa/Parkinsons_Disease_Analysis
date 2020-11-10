@@ -1,0 +1,145 @@
+---
+title: "Feature & Target Engineering"
+author: "Sarah AlQahtani"
+date: "11/10/2020"
+output: html_document
+---
+```{r}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(DT)
+library(scales)
+library(visdat)
+library(purrr)
+library(readr)
+library(modeldata)
+library(rsample)
+library(bestNormalize)
+library(caret)
+library(recipes)
+```
+Identify one of the open source datasets you found during module 1’s exercise. Create a new Github repository that will focus on analyzing this dataset. Write up an initial report that answers the following:
+## Assess Data
+1. Assess the distribution of the target / response variable.
+  - Is the response skewed?
+```{r}
+ggplot(parkinsons, aes(x = total_UPDRS)) + 
+    geom_density(trim = TRUE)
+
+```
+```{r}
+hist(parkinsons$total_UPDRS)
+```
+The target variable as shown in the plot above is not skewed and it is normally distrebuted.
+
+  - Does applying a transformation normalize the distribution?
+```{r}
+ggplot(parkinsons, aes(x = log10(total_UPDRS))) + 
+    geom_density(trim = TRUE)
+```
+  Applying transformation on the target variable affeted the normality of the distribution as it become negativly skewed.
+2. Assess the dataset for missingness.
+  - How many observations have missing values?
+```{r}
+sum(is.na(parkinsons))
+```
+  
+  - Plot the missing values. Does there appear to be any patterns to the missing values?
+  - How do you think the different imputation approaches would impact modeling results?
+
+There are no missing values in our dataset.
+
+3. Assess the variance across the features.
+  - Do any features have zero variance?
+  - Do any features have near-zero variance?
+```{r}
+caret::nearZeroVar(parkinsons,saveMetrics = TRUE)
+```
+  Using _nearZeroVar_ in caret package, we created a dataframe where the two key columns are _zeroVar_ and _nzv_. They act as an indicator of whether or not that feature is zero variance or near-zero variance. Here, they showed that there are no zero or near zero variance features.
+  
+4. Assess the numeric features.
+```{r}
+str(parkinsons)
+```
+All features in this dataset are numeric except the sex.
+  - Do some features have significant skewness?
+```{r}
+plot(jitter(total_UPDRS)~., parkinsons)
+```
+  - Do features have a wide range of values that would benefit from standardization?
+```{r}
+recipe(total_UPDRS ~ ., data = parkinsons) %>%
+  step_YeoJohnson(all_numeric()) 
+
+
+```
+  
+5. Assess the categorical features.
+  - Are categorical levels equally spread out across the features or is “lumping” occurring?
+  - Which values do you think should be one-hot or dummy encoded versus label encoded? Why?
+```{r}
+str(parkinsons)
+```
+Sex variable is only the catigorical variable and it is preprocessed as a lable encoding already as 0s represent males and 1's represent female.
+
+6. Execute a basic feature engineering process.
+  - First, apply a KNN model to your data without pre-applying feature engineering processes.
+```{r}
+# Stratified sampling with the rsample package
+set.seed(123)
+split <- initial_split(parkinsons, prop = 0.7, 
+                       strata = "total_UPDRS")
+par_train  <- training(split)
+par_test   <- testing(split)
+
+# Specify resampling strategy
+cv <- caret::trainControl(
+  method = "repeatedcv", 
+  number = 10, 
+  repeats = 5
+)
+
+# Create grid of hyperparameter values
+hyper_grid <- expand.grid(k = seq(2, 25, by = 1))
+
+# Tune a knn model using grid search
+knn_fit <- train(
+  total_UPDRS ~ ., 
+  data = par_train, 
+  method = "knn", 
+  trControl = cv, 
+  tuneGrid = hyper_grid,
+  metric = "RMSE"
+)
+
+# Print and plot the CV results
+knn_fit
+ggplot(knn_fit)
+```
+  As we can see in the results above that the best model was associated with $k=$ `r knn_fit$bestTune$k`, which resulted in a cross-validated RMSE of `r knn_fit$results %>% filter(k == knn_fit$bestTune$k) %>% pull(RMSE) %>% scales::comma()`.
+  - Create and a apply a blueprint of feature engineering processes that you think will help your model improve.
+```{r}
+blueprint <- recipe(total_UPDRS ~ .,data=par_train) %>% 
+  step_YeoJohnson(all_numeric())
+blueprint  
+```
+  - Now reapply the KNN model to your data that has been feature engineered.
+```{r}
+knn_fit2 <- train(
+  blueprint, 
+  data = par_train, 
+  method = "knn", 
+  trControl = cv, 
+  tuneGrid = hyper_grid,
+  metric = "RMSE"
+)
+
+# Print and plot the CV results
+knn_fit2
+ggplot(knn_fit2)
+```
+Looking at our results we see that the best model was associated with $k=$ `r knn_fit2$bestTune$k`, which resulted in a cross-validated RMSE of `r knn_fit2$results %>% filter(k == knn_fit2$bestTune$k) %>% pull(RMSE) %>% scales::comma()`.
+  
+  - Did your model performance improve?
+  Yes the performance has improved after applying features engineering. Since the RMSE in the first model was `r knn_fit$results %>% filter(k == knn_fit$bestTune$k) %>% pull(RMSE) %>% scales::comma()`. However, it decreased after preprocess the features to become `r knn_fit2$results %>% filter(k == knn_fit2$bestTune$k) %>% pull(RMSE) %>% scales::comma()`.
+  
