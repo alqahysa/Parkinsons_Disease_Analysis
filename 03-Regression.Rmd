@@ -4,3 +4,96 @@ author: "Sarah AlQahtani"
 date: "11/10/2020"
 output: html_document
 ---
+Using the same dataset leveraged for Portfolio Builder Exercise #1, write up a second report that answers the following:
+
+1. Depending on the type of response variable, apply a linear or logistic regression model.
+
+   As the target variable in the dataset is continues _total_UPDRS_, we are going to apply Liner Regression model.
+
+ - First, apply the model to your data without pre-applying feature engineering processes.
+```{r}
+set.seed(123)  # for reproducibility
+(cv_model1 <- train(
+  form = total_UPDRS ~ ., 
+  data = par_train, 
+  method = "lm",
+  trControl = trainControl(method = "cv", number = 10)
+))
+```
+ 
+ - Create and a apply a blueprint of feature engineering processes that you think will help your model improve.
+```{r}
+blueprint
+```
+ 
+ - Now reapply the model to your data that has been feature engineered.
+```{r}
+set.seed(123)  # for reproducibility
+(cv_model2 <- train(
+  blueprint, 
+  data = par_train, 
+  method = "lm",
+  trControl = trainControl(method = "cv", number = 10)
+))
+```
+ - Did your model performance improve?
+  Yes the performance has improved after applying features engineering. Since the RMSE in the first model was `r cv_model1$results %>% filter(k == cv_model1$bestTune$k) %>% pull(RMSE) %>% scales::comma()`. However, it decreased after preprocess the features to become `r cv_model2$results %>% filter(k == cv_model2$bestTune$k) %>% pull(RMSE) %>% scales::comma()`. 
+2. Apply a principal component regression model.
+ - Perform a grid search over several components.
+ - Identify and explain the performance of the optimal model.
+```{r}
+set.seed(123)
+cv_model_pcr <- train(
+  blueprint, 
+  data = par_train, 
+  method = "pcr",
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 100
+  )
+
+# model with lowest RMSE
+cv_model_pcr$bestTune
+```
+```{r}
+cv_model_pcr$results %>%
+  dplyr::filter(ncomp == pull(cv_model_pcr$bestTune))
+```
+```{r}
+ggplot(cv_model_pcr)
+```
+ 
+3. Apply a partial least squares regression model.
+ - Perform a grid search over several components.
+ - Identify and explain the performance of the optimal model.
+```{r}
+set.seed(123)
+cv_model_pls <- train(
+  blueprint, 
+  data = par_train, 
+  method = "pls",
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 100
+  )
+
+# model with lowest RMSE
+cv_model_pls$bestTune
+```
+```{r}
+cv_model_pls$results %>%
+  dplyr::filter(ncomp == pull(cv_model_pls$bestTune))
+```
+```{r}
+ggplot(cv_model_pls)
+
+```
+ 
+4. Apply a regularized regression model.
+
+ - Perform a grid search across alpha parameter values ranging between 0–1.
+ - What is the optimal alpha and lambda values?
+ - What is the MSE and RMSE for this optimal model?
+ - How does it compare to your previous models?
+5. Pick the best performing model from above.
+ - Identify the most influential features for this model.
+ - Plot the top 10 most influential features.
+ - Do these features have positive or negative impacts on your response variable?
