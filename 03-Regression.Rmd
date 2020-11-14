@@ -4,6 +4,10 @@ author: "Sarah AlQahtani"
 date: "11/10/2020"
 output: html_document
 ---
+```{r}
+library(glmnet)
+```
+
 Using the same dataset leveraged for Portfolio Builder Exercise #1, write up a second report that answers the following:
 
 1. Depending on the type of response variable, apply a linear or logistic regression model.
@@ -86,14 +90,88 @@ cv_model_pls$results %>%
 ggplot(cv_model_pls)
 
 ```
+
  
-4. Apply a regularized regression model.
+4. Apply a regularized regression 
+```{r}
+# we use model.matrix(...)[, -1] to discard the intercept
+X <- model.matrix(total_UPDRS ~ ., par_train)[, -1]
+
+# Y is normally distributed so we don't have to trasform it
+Y <- par_train$total_UPDRS
+```
 
  - Perform a grid search across alpha parameter values ranging between 0–1.
+```{r}
+# for reproducibility
+set.seed(123)
+
+# grid search across 
+cv_glmnet <- train(
+  x = X,
+  y = Y,
+  method = "glmnet",
+  preProc = c("zv", "center", "scale"),
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 10
+)
+```
+ 
  - What is the optimal alpha and lambda values?
+```{r}
+cv_glmnet$bestTune
+```
+ 
  - What is the MSE and RMSE for this optimal model?
+```{r}
+cv_glmnet$results %>%
+  filter(alpha == cv_glmnet$bestTune$alpha, lambda == cv_glmnet$bestTune$lambda)
+```
  - How does it compare to your previous models?
 5. Pick the best performing model from above.
  - Identify the most influential features for this model.
  - Plot the top 10 most influential features.
+```{r}
+# predict sales price on training data
+pred <- predict(cv_glmnet, X)
+
+# compute RMSE of transformed predicted
+RMSE(pred, Y)
+```
+ 
+```{r}
+vip::vip(cv_glmnet, num_features = 10, method = "model")
+```
  - Do these features have positive or negative impacts on your response variable?
+```{r}
+p1 <- pdp::partial(cv_glmnet, pred.var = "motor_UPDRS", grid.resolution = 20) %>%
+  mutate(yhat = exp(yhat)) %>%
+  ggplot(aes(motor_UPDRS, yhat)) +
+  geom_line() +
+  scale_y_continuous(limits = c(0, 300000))
+
+p2 <- pdp::partial(cv_glmnet, pred.var = "Shimmer.APQ3", grid.resolution = 20) %>%
+  mutate(yhat = exp(yhat)) %>%
+  ggplot(aes(Shimmer.APQ3, yhat)) +
+  geom_line() +
+  scale_y_continuous(limits = c(0, 300000))
+
+p3 <- pdp::partial(cv_glmnet, pred.var = "Shimmer.APQ11") %>%
+  mutate(
+    yhat = exp(yhat),
+    Shimmer.APQ11 = factor(Shimmer.APQ11)
+    ) %>%
+  ggplot(aes(Shimmer.APQ11, yhat)) +
+  geom_boxplot() +
+  scale_y_continuous(limits = c(0, 300000))
+
+p4 <- pdp::partial(cv_glmnet, pred.var = "Jitter", grid.resolution = 20) %>%
+  mutate(yhat = exp(yhat)) %>%
+  ggplot(aes(Jitter, yhat)) +
+  geom_line() +
+  scale_y_continuous(limits = c(0, 300000))
+
+grid.arrange(p1, p2, p3, p4, nrow = 2)
+```
+ 
+
