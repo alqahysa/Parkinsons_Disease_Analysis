@@ -33,7 +33,11 @@ list_of_pkgs <- c(
   "rprojroot",     # coordinating paths
   "kernlab",
   "visdat",
-  "bestNormalize"
+  "bestNormalize",
+  "mvnormtest",
+  "vip",
+  "glmnet",
+  "kableExtra"
 )
 ```
 

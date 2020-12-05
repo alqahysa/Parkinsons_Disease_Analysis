@@ -1,0 +1,348 @@
+---
+title: "05-GBMs_AutoML"
+author: "Sarah AlQahtani"
+date: "11/21/2020"
+output: html_document
+---
+```{r}
+# Helper packages
+library(dplyr)    # for general data wrangling needs
+
+# Modeling packages
+library(gbm)      # for original implementation of regular and stochastic GBMs
+library(h2o)      # for a java-based implementation of GBM variants
+library(xgboost)  # for fitting extreme gradient boosting
+library(rsample)  # sampling procedure
+
+```
+Using the same dataset leveraged for Portfolio Builder Exercises #1, #2, & #3 write up a third report that answers the following:
+1. Apply a basic GBM model with the same features you used in the random forest module.
+- Apply the default hyperparameter settings with a learning rate set to 0.10. How does model performance compare to the random forest module?
+```{r}
+# run a basic GBM model
+set.seed(123)  # for reproducibility
+par_gbm1 <- gbm(
+  formula = total_UPDRS ~ .,
+  data = par_train,
+  distribution = "gaussian",  # SSE loss function
+  n.trees = 3000,
+  shrinkage = 0.1,
+  interaction.depth = 3,
+  n.minobsinnode = 1,
+  cv.folds = 10
+)
+
+# find index for number trees with minimum CV error
+best <- which.min(par_gbm1$cv.error)
+
+# get MSE and compute RMSE
+sqrt(par_gbm1$cv.error[best])
+```
+```{r}
+# plot error curve
+gbm.perf(par_gbm1, method = "cv")
+
+```
+
+- How many trees were applied? Was this enough to stabilize the loss function or do you need to add more?
+1564 trees. Yes it needs to be improved.
+
+- Tune the hyperparameters using the suggested tuning strategy for basic GBMs. Did your model performance improve?
+```{r}
+hyper_grid <- expand.grid(
+  learning_rate = c(0.3, 0.1, 0.05, 0.01, 0.005),
+  RMSE = NA,
+  trees = NA,
+  time = NA
+)
+
+# execute grid search
+for(i in seq_len(nrow(hyper_grid))) {
+
+  # fit gbm
+  set.seed(123)  # for reproducibility
+  train_time <- system.time({
+    m <- gbm(
+      formula = total_UPDRS ~ .,
+      data = par_train,
+      distribution = "gaussian",
+      n.trees = 3000, 
+      shrinkage = hyper_grid$learning_rate[i], 
+      interaction.depth = 3, 
+      n.minobsinnode = 10,
+      cv.folds = 10 
+   )
+  })
+  
+  # add SSE, trees, and training time to results
+  hyper_grid$RMSE[i]  <- sqrt(min(m$cv.error))
+  hyper_grid$trees[i] <- which.min(m$cv.error)
+  hyper_grid$Time[i]  <- train_time[["elapsed"]]
+
+}
+
+# results
+arrange(hyper_grid, RMSE)
+```
+After, we will set the learning rate to the optimal level which is 0.1 and tune the tree specific hyperparameters interaction.depth and n.minobsinnode.
+```{r}
+hyper_grid <- expand.grid(
+  n.trees = 4000,
+  shrinkage = 0.1,
+  interaction.depth = c(3, 5, 7),
+  n.minobsinnode = c(5, 10, 15)
+)
+
+# create model fit function
+model_fit <- function(n.trees, shrinkage, interaction.depth, n.minobsinnode) {
+  set.seed(123)
+  m <- gbm(
+    formula = total_UPDRS ~ .,
+    data = par_train,
+    distribution = "gaussian",
+    n.trees = n.trees,
+    shrinkage = shrinkage,
+    interaction.depth = interaction.depth,
+    n.minobsinnode = n.minobsinnode,
+    cv.folds = 10
+  )
+  # compute RMSE
+  sqrt(min(m$cv.error))
+}
+
+# perform search grid with functional programming
+hyper_grid$rmse <- purrr::pmap_dbl(
+  hyper_grid,
+  ~ model_fit(
+    n.trees = ..1,
+    shrinkage = ..2,
+    interaction.depth = ..3,
+    n.minobsinnode = ..4
+    )
+)
+
+# results
+arrange(hyper_grid, rmse)
+
+```
+
+Now, we will take our best model hypermeters and reduce the number of the learnong rate to 0.001 and increase the number of trees 6000 to improve the accuracy.
+```{r}
+hyper_grid <- expand.grid(
+  n.trees = 6000,
+  shrinkage = 0.001,
+  interaction.depth = c(3, 5, 7),
+  n.minobsinnode = c(5, 10, 15)
+)
+
+# create model fit function
+model_fit <- function(n.trees, shrinkage, interaction.depth, n.minobsinnode) {
+  set.seed(123)
+  m <- gbm(
+    formula = total_UPDRS ~ .,
+    data = par_train,
+    distribution = "gaussian",
+    n.trees = n.trees,
+    shrinkage = shrinkage,
+    interaction.depth = interaction.depth,
+    n.minobsinnode = n.minobsinnode,
+    cv.folds = 10
+  )
+  # compute RMSE
+  sqrt(min(m$cv.error))
+}
+
+# perform search grid with functional programming
+hyper_grid$rmse <- purrr::pmap_dbl(
+  hyper_grid,
+  ~ model_fit(
+    n.trees = ..1,
+    shrinkage = ..2,
+    interaction.depth = ..3,
+    n.minobsinnode = ..4
+    )
+)
+
+# results
+arrange(hyper_grid, rmse)
+
+```
+RMSE does not shoe ane improvement.
+
+
+2. Apply a stochastic GBM model. Tune the hyperparameters using the suggested tuning strategy for stochastic GBMs. Did your model performance improve?
+```{r}
+# refined hyperparameter grid
+hyper_grid <- list(
+  sample_rate = c(0.5, 0.75, 1),              # row subsampling
+  col_sample_rate = c(0.5, 0.75, 1),          # col subsampling for each split
+  col_sample_rate_per_tree = c(0.5, 0.75, 1)  # col subsampling for each tree
+)
+
+# random grid search strategy
+search_criteria <- list(
+  strategy = "RandomDiscrete",
+  stopping_metric = "mse",
+  stopping_tolerance = 0.001,   
+  stopping_rounds = 10,         
+  max_runtime_secs = 60*60      
+)
+
+# perform grid search 
+grid <- h2o.grid(
+  algorithm = "gbm",
+  grid_id = "gbm_grid",
+  x = predictors, 
+  y = response,
+  training_frame = train_h2o,
+  hyper_params = hyper_grid,
+  ntrees = 4000,
+  learn_rate = 0.01,
+  max_depth = 7,
+  min_rows = 10,
+  nfolds = 10,
+  stopping_rounds = 10,
+  stopping_tolerance = 0,
+  search_criteria = search_criteria,
+  seed = 123
+)
+
+# collect the results and sort by our model performance metric of choice
+grid_perf <- h2o.getGrid(
+  grid_id = "gbm_grid", 
+  sort_by = "mse", 
+  decreasing = FALSE
+)
+```
+
+```{r}
+# Grab the model_id for the top model, chosen by cross validation error
+best_model_id <- grid_perf@model_ids[[1]]
+best_model <- h2o.getModel(best_model_id)
+
+# Now let’s get performance metrics on the best model
+h2o.performance(model = best_model, xval = TRUE)
+```
+
+3. Apply an XGBoost model. Tune the hyperparameters using the suggested tuning strategy for XGBoost models.
+```{r}
+library(recipes)
+xgb_prep <- recipe(total_UPDRS ~ ., data = ames_train) %>%
+  step_integer(all_nominal()) %>%
+  prep(training = par_train, retain = TRUE) %>%
+  juice()
+
+X <- as.matrix(xgb_prep[setdiff(names(xgb_prep), "total_UPDRS")])
+Y <- xgb_prep$total_UPDRS
+
+```
+
+```{r}
+set.seed(123)
+ames_xgb <- xgb.cv(
+  data = X,
+  label = Y,
+  nrounds = 6000,
+  objective = "reg:linear",
+  early_stopping_rounds = 50, 
+  nfold = 10,
+  params = list(
+    eta = 0.05,
+    max_depth = 3,
+    min_child_weight = 3,
+    subsample = 0.8,
+    colsample_bytree = 0.5),
+  verbose = 0
+)  
+
+# minimum test CV RMSE
+min(ames_xgb$evaluation_log$test_rmse_mean)
+```
+
+```{r}
+# hyperparameter grid
+hyper_grid <- expand.grid(
+  eta = 0.05,
+  max_depth = 3, 
+  min_child_weight = 3,
+  subsample = 0.8, 
+  colsample_bytree = 0.5,
+  gamma = c(0, 1, 10, 100, 1000),
+  lambda = c(0, 1e-2, 0.1, 1, 100, 1000, 10000),
+  alpha = c(0, 1e-2, 0.1, 1, 100, 1000, 10000),
+  rmse = 0,          # a place to dump RMSE results
+  trees = 0          # a place to dump required number of trees
+)
+
+# grid search
+for(i in seq_len(nrow(hyper_grid))) {
+  set.seed(123)
+  m <- xgb.cv(
+    data = X,
+    label = Y,
+    nrounds = 4000,
+    objective = "reg:linear",
+    early_stopping_rounds = 50, 
+    nfold = 10,
+    verbose = 0,
+    params = list( 
+      eta = hyper_grid$eta[i], 
+      max_depth = hyper_grid$max_depth[i],
+      min_child_weight = hyper_grid$min_child_weight[i],
+      subsample = hyper_grid$subsample[i],
+      colsample_bytree = hyper_grid$colsample_bytree[i],
+      gamma = hyper_grid$gamma[i], 
+      lambda = hyper_grid$lambda[i], 
+      alpha = hyper_grid$alpha[i]
+    ) 
+  )
+  hyper_grid$rmse[i] <- min(m$evaluation_log$test_rmse_mean)
+  hyper_grid$trees[i] <- m$best_iteration
+}
+hyper_grid %>%
+  arrange(rmse)
+```
+
+```{r}
+# optimal parameter list
+params <- list(
+  eta = 0.05,
+  max_depth = 3,
+  min_child_weight = 3,
+  subsample = 0.8,
+  colsample_bytree = 0.5,
+  lambda = 1,
+  alpha = 10000
+)
+
+# train final model
+xgb.fit.final <- xgboost(
+  params = params,
+  data = X,
+  label = Y,
+  nrounds = 1350,
+  objective = "reg:linear",
+  verbose = 0
+)
+```
+
+- Did your model performance improve?
+- Did regularization help?
+4. Pick your best GBM model. Which 10 features are considered most influential? Are these the same features that have been influential in previous models?
+
+5. Create partial dependence plots for the top two most influential features. Explain the relationship between the feature and the predicted values.
+
+6. Using H2O, build and assess the following individual models:
+- regularized regression base learner,
+- random forest base learner.
+- GBM and/or XGBoost base learner.
+7. Using h2o.stackedEnsemble(), stack these three models.
+- Does your stacked model performance improve over and above the individual learners?
+- Explain your reasoning why or why not performance improves.
+8. Perform a stacked grid search with an H2O GBM or XGBoost model.
+- What was your best performing model?
+- Do you notice any patterns in the hyperparameter settings for the top 5-10 models?
+9. Perform an AutoML search across multiple types of learners.
+- Which types of base learners are in the top 10?
+- What model provides the optimal performance?
+- Apply this model to the test set. How does the test loss function compare to the training cross-validated RMSE?

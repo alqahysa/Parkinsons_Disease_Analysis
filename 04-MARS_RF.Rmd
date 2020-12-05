@@ -1,0 +1,342 @@
+---
+title: "MARS and Random Forest"
+author: "Sarah AlQahtani"
+date: "11/17/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# Set global R options
+options(scipen = 999)
+
+# Set the graphical theme
+ggplot2::theme_set(ggplot2::theme_light())
+
+# Set global knitr chunk options
+knitr::opts_chunk$set(
+  cache = TRUE,
+  warning = FALSE, 
+  message = FALSE
+)
+```
+Using the same dataset leveraged for Portfolio Builder Exercise #1 & #2, write up a third report that answers the following:
+```{r}
+# Helper packages
+library(dplyr)     # for data wrangling
+library(ggplot2)   # for awesome plotting
+
+# Modeling packages
+library(earth)     # for fitting MARS models
+library(caret)     # for automating the tuning process
+library(ranger)   # a c++ implementation of random forest 
+library(h2o)      # a java-based implementation of random forest
+library(rsample)  # resampling procedures
+
+# Model interpretability packages
+library(vip)       # for variable importance
+library(pdp)       # for variable relationships
+
+
+```
+
+1. Apply a MARS model with all features.
+```{r}
+# Fit a basic MARS model
+mars <- earth(
+  total_UPDRS ~ .,  
+  data = par_train   
+)
+
+# Print model summary
+print(mars)
+```
+```{r}
+summary(mars) %>% .$coefficients %>% head(10)
+```
+```{r}
+plot(mars, which = 1)
+```
+## Tuningg
+```{r}
+seq(2, 100, length.out = 10) %>% floor()
+```
+
+```{r}
+# create a tuning grid
+hyper_grid <- expand.grid(
+  degree = 1:3, 
+  nprune = seq(2, 100, length.out = 10) %>% floor()
+)
+
+hyper_grid
+```
+```{r}
+# Cross-validated model
+set.seed(123)  # for reproducibility
+cv_mars <- train(
+  x = subset(par_train, select = -total_UPDRS),
+  y = par_train$total_UPDRS,
+  method = "earth",
+  metric = "RMSE",
+  trControl = trainControl(method = "cv", number = 10),
+  tuneGrid = hyper_grid
+)
+
+# View results
+cv_mars$bestTune
+```
+```{r}
+cv_mars$results %>%
+  filter(nprune == cv_mars$bestTune$nprune, degree == cv_mars$bestTune$degree)
+```
+The cross-validated RMSE for these models is displayed below; the optimal model’s cross-validated RMSE is 1.633541.
+```{r}
+ggplot(cv_mars)
+```
+
+
+- How does the model performance compare to your previous models?
+```{r}
+# extract out of sample performance measures
+summary(resamples(list(
+  "LM" = cv_model2, 
+  "PCR" = cv_model_pcr, 
+  "PLS" = cv_model_pls,
+  "Regularized Regression " = cv_glmnet,
+  "MARS" = cv_mars
+)))$statistics$RMSE %>%
+  kableExtra::kable(caption = "Cross-validated RMSE results for tuned MARS and regression models.") %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover"))
+```
+The MARS model higher  RMSE than the regression models but have a higher RMSE.
+
+- How many of the features are influential? Which 10 features are considered most influential?
+```{r}
+# variable importance plots
+p1 <- vip(cv_mars, num_features = 10, geom = "point", value = "gcv") + ggtitle("GCV")
+p2 <- vip(cv_mars, num_features = 10, geom = "point", value = "rss") + ggtitle("RSS")
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+as we can see above the following features are the most influential features:
+  - motor_UPDRS
+  - subject
+  - age
+  - sex
+  - HNR
+  - Jitter.Abs.
+  - DFA
+- Does your model include hinge functions? If so, explain their coefficient and plot their impact on the predicted response variable.
+```{r}
+summary(cv_mars) %>% .$coefficients %>% head(10)
+```
+- Does your model include interactions? If so, pick the interaction effect that is most influential and explain the coefficient.
+```{r}
+# extract coefficients, convert to tidy data frame
+cv_mars$finalModel %>%
+  coef() %>%  
+  broom::tidy()
+```
+As our model perform the best when degree=1, we can see that that there are no interaction terms.
+
+2. Apply a random forest model.
+- First, apply a default random forest model.
+```{r}
+# number of features
+n_features <- length(setdiff(names(par_train), "total_UPDRS"))
+
+# train a default random forest model
+par_rf1 <- ranger(
+  total_UPDRS ~ ., 
+  data = par_train,
+  mtry = floor(n_features / 3),
+  respect.unordered.factors = "order",
+  seed = 123
+)
+
+# get OOB RMSE
+(default_rmse <- sqrt(par_rf1$prediction.error))
+```
+
+- Now apply a a full cartesian grid search across various values of mtry, tree complexity & sampling scheme.
+```{r}
+# create hyperparameter grid
+hyper_grid <- expand.grid(
+  mtry = floor(n_features * c(.05, .15, .25, .333, .4)),
+  min.node.size = c(1, 3, 5, 10), 
+  replace = c(TRUE, FALSE),                               
+  sample.fraction = c(.5, .63, .8),                       
+  rmse = NA                                               
+)
+
+# execute full cartesian grid search
+for(i in seq_len(nrow(hyper_grid))) {
+  # fit model for ith hyperparameter combination
+  fit <- ranger(
+    formula         = total_UPDRS ~ ., 
+    data            = par_train, 
+    num.trees       = n_features * 10,
+    mtry            = hyper_grid$mtry[i],
+    min.node.size   = hyper_grid$min.node.size[i],
+    replace         = hyper_grid$replace[i],
+    sample.fraction = hyper_grid$sample.fraction[i],
+    verbose         = FALSE,
+    seed            = 123,
+    respect.unordered.factors = 'order',
+  )
+  # export OOB error 
+  hyper_grid$rmse[i] <- sqrt(fit$prediction.error)
+}
+
+# assess top 10 models
+hyper_grid %>%
+  arrange(rmse) %>%
+  mutate(perc_gain = (default_rmse - rmse) / default_rmse * 100) %>%
+  head(10)
+```
+
+- Now run a random grid search across the same hyperparameter grid but restrict the time or number of models to run to 50% of the models ran in the full cartesian.
+```{r}
+h2o.no_progress()
+h2o.init(max_mem_size = "5g")
+
+```
+
+```{r}
+# convert training data to h2o object
+train_h2o <- as.h2o(par_train)
+
+# set the response column to Sale_Price
+response <- "total_UPDRS"
+
+# set the predictor names
+predictors <- setdiff(colnames(par_train), response)
+```
+
+```{r}
+h2o_rf1 <- h2o.randomForest(
+    x = predictors, 
+    y = response,
+    training_frame = train_h2o, 
+    ntrees = n_features * 10,
+    seed = 123
+)
+
+h2o_rf1
+```
+```{r}
+# hyperparameter grid
+hyper_grid <- list(
+  mtries = floor(n_features * c(.05, .15, .25, .333, .4)),
+  min_rows = c(1, 3, 5, 10),
+  max_depth = c(10, 20, 30),
+  sample_rate = c(.55, .632, .70, .80)
+)
+
+# random grid search strategy
+search_criteria <- list(
+  strategy = "RandomDiscrete",
+  stopping_metric = "mse",
+  stopping_tolerance = 0.001,   # stop if improvement is < 0.1%
+  stopping_rounds = 10,         # over the last 10 models
+  max_runtime_secs = 60*5      # or stop search after 5 min.
+)
+```
+
+```{r}
+# perform grid search 
+random_grid <- h2o.grid(
+  algorithm = "randomForest",
+  grid_id = "rf_random_grid",
+  x = predictors, 
+  y = response, 
+  training_frame = train_h2o,
+  hyper_params = hyper_grid,
+  ntrees = n_features * 10,
+  seed = 123,
+  stopping_metric = "RMSE",   
+  stopping_rounds = 10,           # stop if last 10 trees added 
+  stopping_tolerance = 0.005,     # don't improve RMSE by 0.5%
+  search_criteria = search_criteria
+)
+
+```
+
+```{r}
+# collect the results and sort by our model performance metric 
+# of choice
+random_grid_perf <- h2o.getGrid(
+  grid_id = "rf_random_grid", 
+  sort_by = "rmse", 
+  decreasing = FALSE
+)
+random_grid_perf
+```
+
+3. Pick the best performing model from above.
+Our grid search assessed __240__ models before stopping due to time. The best model (`max_depth = 30`, `min_rows = 1`, `mtries = 8`, and `sample_rate = 0.8`) achieved an OOB RMSE of 0.44707568204518283.
+- Identify the most influential features for this model.
+```{r}
+# re-run model with impurity-based variable importance
+rf_impurity <- ranger(
+  formula = total_UPDRS ~ ., 
+  data = par_train, 
+  num.trees = 3000,
+  mtry = 8,
+  min.node.size = 1,
+  sample.fraction = .80,
+  replace = FALSE,
+  importance = "impurity",
+  respect.unordered.factors = "order",
+  verbose = FALSE,
+  seed  = 123
+)
+
+# re-run model with permutation-based variable importance
+rf_permutation <- ranger(
+  formula = total_UPDRS ~ ., 
+  data = par_train, 
+  num.trees = 3000,
+  mtry = 8,
+  min.node.size = 1,
+  sample.fraction = .80,
+  replace = FALSE,
+  importance = "permutation",
+  respect.unordered.factors = "order",
+  verbose = FALSE,
+  seed  = 123
+)
+```
+
+- Plot the top 10 most influential features.
+```{r}
+p1 <- vip::vip(rf_impurity, num_features = 10, geom = "point")
+p2 <- vip::vip(rf_permutation, num_features = 10, geom = "point")
+
+gridExtra::grid.arrange(p1, p2, nrow = 1)
+```
+
+- Do these features have positive or negative impacts on your response variable?
+```{r}
+
+```
+
+- Create partial dependence plots for these features. Explain the relationship between the feature and the predicted values.
+```{r}
+p1 <- partial(rf_impurity, pred.var = "motor_UPDRS", grid.resolution = 10) %>% 
+  ggplot(aes(motor_UPDRS, yhat)) +
+  geom_line()
+
+p2 <- partial(rf_impurity, pred.var = "subject.", grid.resolution = 10) %>% 
+  ggplot(aes(subject., yhat)) +
+  geom_line()
+
+p3 <- partial(rf_impurity, pred.var ="age", 
+              grid.resolution = 10) %>% 
+  ggplot(aes(age, yhat)) +
+  geom_line()
+
+# Display plots side by side
+gridExtra::grid.arrange(p1, p2, p3, ncol = 3)
+```
+
